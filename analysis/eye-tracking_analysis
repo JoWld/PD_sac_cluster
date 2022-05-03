@@ -1,0 +1,99 @@
+#   This is an R function to analyse an antisaccade task recorded with an Eyelink 1000. 
+
+#  Copyright (C) January 2018, last modified April 2022
+#   J.Waldthaler
+#   University Hospital of Gießen and Marburg
+#
+#   This software may be used, copied, or redistributed as long as it is
+#   not sold and this copyright notice is reproduced on each copy made.
+#   This routine is provided as is without any express or implied
+#   warranties whatsoever.
+
+
+#load packages
+require(eyelinker)
+require(dplyr)
+library(scales)
+library(tidyr)
+library(stringr)
+
+# load single file or define list for loop
+setwd("~/Documents/")
+#dat <- read.asc("pd0xxxx.asc")
+
+filenames = list.files(pattern=".asc")
+combined <- NULL
+
+# loop
+for(i in 1:n(filenames)){
+  print( filenames[i]) 
+  filename = filenames[i]
+  dat <- read.asc(filename)
+  results<-tryCatch({sac_script(i)},error=function(e){})
+  combined = rbind(combined, results)
+}
+
+# create summary file of all participants in the loop
+file <- paste("summary_et.csv")
+write.csv(combined,file=file)
+
+
+sac_script<- function(i) {
+  # load data
+  raw <- dat$raw
+  raw.long <- dplyr::select(raw,time,xp,yp,block) %>% gather("coord","pos",xp,yp)
+  raw.long <- mutate(raw.long,ts=(time-min(time))/1e3)
+  # define saccades
+  sac <- dat$sac
+  sac <- cbind(sac$stime,sac$etime) 
+  raw <- mutate(raw,saccade=time %In% Sac)
+  mutate(raw.long,saccade=time %In% Sac) %>% filter(block==1) %>% ggplot(aes(ts,pos,group=coord,col=saccade))+geom_line()
+  target <- filter(dat$msg,str_detect(text,fixed("target_pos"))) 
+  type <- filter(dat$msg,str_detect(text,fixed("type")))
+  start <- filter(dat$msg,str_detect(text,fixed("start_trial"))) 
+  start <- subset( start, select =-3 )
+  sac<- merge(sac, start, by="block")
+  sac$latency <- (sac$stime-sac$time-2000)
+  sac$amplitude <- (sac$sxp-sac$exp)*-1
+  sac <- merge(sac, target, by="block")
+  arrange(sac, latency)
+  sac <- filter (sac,sxp>400)
+  sac <- filter (sac,sxp<600)
+  
+  for(i in 1:nrow(sac)){
+    if(sac[i,16]=="var target_pos -300"){
+      sac[i,16]= -300
+    }
+  }
+  for(i in 1:nrow(sac)){
+    if(sac[i,16]=="var target_pos 300"){
+      sac[i,16]= 300
+    }
+  }
+  
+  sac$text<-as.numeric(sac$text)
+  sac$gain <- sac$amplitude/sac$text
+  sac<-filter(sac, sac$latency>0)
+  sac <- filter (sac, sac$ampl>1)
+
+  sac <- sac %>% 
+    group_by(block) %>% 
+    filter(row_number()==1)
+  
+  # remove anticipated sac, filter for express sac, errors and correct antisac
+  sac <- filter (sac, sac$latency < 90)
+  sac_ex<- filter(sac, sac$latency>90)
+  sac_ex<- filter(sac, sac$latency<130)
+  sac<- filter(sac, sac$latency>129)
+  sac <- filter(sac, sac$latency<(mean(sac$latency)+2*sd(sac$latency)))
+  pro <- filter (sac, sac$gain> 0)
+  anti <- filter (sac, sac$gain < 0)
+
+  results <- data.frame(filename, count(sac_ant)+ count(sac_ex) + count(pro)+count(anti),count(sac_ant), count(sac_ex), count(pro), count(anti), 
+                        mean(pro$latency), sd(pro$latency), mean(pro$gain), sd(pro$gain), 
+                        mean(anti$latency),sd(anti$latency), mean(anti$gain), sd(anti$gain), 
+                        count(sac_ex)/(count(pro)+count(anti)+count(sac_ex)), 
+                        count(pro)/(count(pro)+count(anti)))
+  print(results)
+}
+
